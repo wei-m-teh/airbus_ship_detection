@@ -1,0 +1,1 @@
+segmentation_models==1.0.1
