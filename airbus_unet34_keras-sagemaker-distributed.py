@@ -5,18 +5,26 @@ from skimage.io import imread
 import matplotlib.pyplot as plt
 import horovod.tensorflow.keras as hvd
 from tensorflow.keras.losses import binary_crossentropy
-import tensorflow as tf$
-import segmentation_models as sm$
-import tensorflow.keras.backend as K$
+import tensorflow as tf
+import segmentation_models as sm
+import tensorflow.keras.backend as K
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
 from skimage.morphology import label
-import gc; gc.enable() 
+import argparse
+import gc; gc.enable()
+from tensorflow.keras.callbacks import Callback
 
 IMG_SCALING = (1, 1)
 
 # maximum number of steps_per_epoch in training
 MAX_TRAIN_STEPS = 500
+
+class ModelPerformanceMetricsCallback(Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        print("For epoch {}, train_loss={}, train_dice_coef={}, train_binary_accuracy={}, train_true_positive_rate={}, val_loss={}, val_dice_coef={}, val_bin_accuracy={}, val_true_positive_rate={}".format(
+            epoch, logs['loss'], logs['dice_coef'], logs['binary_accuracy'], logs['true_positive_rate'], logs['val_loss'], logs['val_dice_coef'], logs['val_binary_accuracy'],
+            logs['val_true_positive_rate']))
 
 def multi_rle_encode(img):
   labels = label(img[:, :, 0])
@@ -57,7 +65,7 @@ def masks_as_image(in_mask_list):
          all_masks += rle_decode(mask)
   return np.expand_dims(all_masks, -1)
 
-def make_image_gen(in_df, batch_size = BATCH_SIZE):
+def make_image_gen(in_df, batch_size = 4):
   all_batches = list(in_df.groupby('ImageId'))
   out_rgb = []
   out_mask = []
@@ -112,7 +120,7 @@ if __name__ =='__main__':
 
    # input data and model directories
    parser.add_argument('--model-dir', type=str, default=os.environ['SM_MODEL_DIR'])
-   parser.add_argument('--train', type=str, default=os.environ['SM_CHANNEL_TRAIN'])
+   parser.add_argument('--train', type=str, default=os.environ['SM_CHANNEL_TRAINING']) # default training directory being the Fsx for Lustre
 
    args, _ = parser.parse_known_args()
 
@@ -123,9 +131,9 @@ if __name__ =='__main__':
    if gpus:
      tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 
-   train_image_dir = os.path.join(args.train, 'train_small')
+   train_image_dir = os.path.join(args.train, 'augmented.1')
 
-   train_masks = pd.read_csv(os.path.join(ship_dir, 'train_ship_segmentations_train.csv'))
+   train_masks = pd.read_csv(os.path.join(args.train, 'train_ship_segmentations_train.csv'))
    print(train_masks.shape[0], 'masks found')
    print(train_masks['ImageId'].value_counts().shape[0])
    print(train_masks.head())
@@ -135,7 +143,7 @@ if __name__ =='__main__':
    print('x', train_x.shape, train_x.min(), train_x.max())
    print('y', train_y.shape, train_y.min(), train_y.max())
 
-   valid_masks = pd.read_csv(os.path.join(ship_dir, 'train_ship_segmentations_valid.csv'))
+   valid_masks = pd.read_csv(os.path.join(args.train, 'train_ship_segmentations_valid.csv'))
    validation_samples = valid_masks.shape[0]
    print(valid_masks.shape[0], 'masks found')
 
@@ -166,13 +174,15 @@ if __name__ =='__main__':
 
    hvdBroadcast = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
    hvdMetricsAvg = hvd.callbacks.MetricAverageCallback()
-   hvdLRWarmup = hvd.callbacks.LearningRateWarmupCallback(warmup_epochs=3, initial_lr=scaled_lr, verbose=1)
+   # hvdLRWarmup = hvd.callbacks.LearningRateWarmupCallback(warmup_epochs=3, initial_lr=scaled_lr, verbose=1)
     
-   callbacks_list = [hvdBroadcast, hvdMetricsAvg, hvdLRWarmup]
+   callbacks_list = [hvdBroadcast, hvdMetricsAvg]
 
    # Horovod: save checkpoints only on worker 0 to prevent other workers from corrupting them.
    if hvd.rank() == 0:
+     model_perf_metrics = ModelPerformanceMetricsCallback()
      callbacks_list.append(checkpoint)
+     callbacks_list.append(model_perf_metrics)
 
    #opt = Adam(scaled_lr, decay=1e-6)
    opt = Adam(scaled_lr)
@@ -181,8 +191,8 @@ if __name__ =='__main__':
 
    steps = (train_masks.shape[0] // args.batch_size) // hvd.size()
    step_count = min(MAX_TRAIN_STEPS, steps)
-   loss_history = [model.fit(train_gen, 
-                           batch_size=args.batch_size,
+   loss_history = [model.fit(train_gen,
+                           # batch_size=args.batch_size,
                           epochs=args.epochs,
                           steps_per_epoch=step_count,
                           validation_data=(valid_x, valid_y),
