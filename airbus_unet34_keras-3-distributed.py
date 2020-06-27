@@ -17,7 +17,7 @@ import os
 import horovod.tensorflow.keras as hvd
 import gc; gc.enable() # memory is tight
 import tensorflow as tf
-
+from tensorflow.keras.callbacks import Callback
 
 # In[3]:
 
@@ -26,7 +26,12 @@ hvd.init()
 
 
 # In[4]:
-
+class CustomCallback(Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        keys = list(logs.keys())
+        print("For epoch {}: train_loss: {}, train_dice_coef: {}, train_binary_accuracy: {}, train_true_positive_rate: {}, val_loss: {}, val_dice_coef: {}, val_bin_accuracy: {}, val_true_positive_rate: {}".format(
+            epoch, logs['loss'], logs['dice_coef'], logs['binary_accuracy'], logs['true_positive_rate'], logs['val_loss'], logs['val_dice_coef'], logs['val_binary_accuracy'], 
+            logs['val_true_positive_rate']))        
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
@@ -204,7 +209,9 @@ callbacks_list = [hvdBroadcast, hvdMetricsAvg, hvdLRWarmup]
 
 # Horovod: save checkpoints only on worker 0 to prevent other workers from corrupting them.
 if hvd.rank() == 0:
+    end_of_epoch_metrics = CustomCallback()
     callbacks_list.append(checkpoint)
+    callbacks_list.append(end_of_epoch_metrics)
 
 # In[37]:
 
