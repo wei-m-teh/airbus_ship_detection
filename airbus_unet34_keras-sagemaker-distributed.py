@@ -18,7 +18,7 @@ from tensorflow.keras.callbacks import Callback
 IMG_SCALING = (1, 1)
 
 # maximum number of steps_per_epoch in training
-MAX_TRAIN_STEPS = 500
+MAX_TRAIN_STEPS = 5000
 
 class ModelPerformanceMetricsCallback(Callback):
     def on_epoch_end(self, epoch, logs=None):

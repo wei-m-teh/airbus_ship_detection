@@ -2,8 +2,8 @@ from sagemaker.tensorflow import TensorFlow
 from sagemaker.inputs import FileSystemInput
 import os
 
-hvd_instance_type = 'ml.p3.8xlarge'
-hvd_processes_per_host = 4
+hvd_instance_type = 'ml.p3.16xlarge'
+hvd_processes_per_host = 8
 hvd_instance_count = 1
 
 distributions = {'mpi': {
