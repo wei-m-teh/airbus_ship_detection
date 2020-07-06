@@ -66,23 +66,22 @@ def masks_as_image(in_mask_list):
   return np.expand_dims(all_masks, -1)
 
 def make_image_gen(in_df, batch_size = 4):
-  all_batches = list(in_df.groupby('ImageId'))
-  out_rgb = []
-  out_mask = []
-  while True:
-     np.random.shuffle(all_batches)
-     for c_img_id, c_masks in all_batches:
-         rgb_path = os.path.join(train_image_dir, c_img_id)
-         c_img = imread(rgb_path)
-         c_mask = masks_as_image(c_masks['EncodedPixels'].values)
-         if IMG_SCALING is not None:
-             c_img = c_img[::IMG_SCALING[0], ::IMG_SCALING[1]]
-             c_mask = c_mask[::IMG_SCALING[0], ::IMG_SCALING[1]]
-         out_rgb += [c_img]
-         out_mask += [c_mask]
-         if len(out_rgb)>=batch_size:
-             yield np.stack(out_rgb, 0)/255.0, np.stack(out_mask, 0)
-             out_rgb, out_mask=[], []
+    out_rgb = []
+    out_mask = []
+    for _, row in in_df.iterrows():
+        c_img_id = row['ImageId']
+        masks = row['EncodedPixels']
+        rgb_path = os.path.join(train_image_dir, c_img_id)
+        c_img = imread(rgb_path)
+        c_mask = masks_as_image([masks])
+        if IMG_SCALING is not None:
+            c_img = c_img[::IMG_SCALING[0], ::IMG_SCALING[1]]
+            c_mask = c_mask[::IMG_SCALING[0], ::IMG_SCALING[1]]
+        out_rgb += [c_img]
+        out_mask += [c_mask]
+        if len(out_rgb)>=batch_size:
+            yield np.stack(out_rgb, 0)/255.0, np.stack(out_mask, 0)
+            out_rgb, out_mask=[], []
 
 def dice_loss(y_true, y_pred):
      smooth = 1.
@@ -131,26 +130,18 @@ if __name__ =='__main__':
    if gpus:
      tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 
-   train_image_dir = os.path.join(args.train, 'augmented.1')
+   train_image_dir = os.path.join(args.train, 'train')
 
    train_masks = pd.read_csv(os.path.join(args.train, 'train_ship_segmentations_train.csv'))
-   print(train_masks.shape[0], 'masks found')
-   print(train_masks['ImageId'].value_counts().shape[0])
-   print(train_masks.head())
 
-   train_gen = make_image_gen(train_masks)
+   train_gen = make_image_gen(train_masks, args.batch_size)
    train_x, train_y = next(train_gen)
-   print('x', train_x.shape, train_x.min(), train_x.max())
-   print('y', train_y.shape, train_y.min(), train_y.max())
 
    valid_masks = pd.read_csv(os.path.join(args.train, 'train_ship_segmentations_valid.csv'))
-   validation_samples = valid_masks.shape[0]
    print(valid_masks.shape[0], 'masks found')
 
-   valid_gen = make_image_gen(valid_masks, validation_samples) # pull all validation samples
+   valid_gen = make_image_gen(valid_masks, args.batch_size)
    valid_x, valid_y = next(valid_gen)
-   print('x', valid_x.shape, valid_x.min(), valid_x.max())
-   print('y', valid_y.shape, valid_y.min(), valid_y.max())
 
    # Contruct a model using UNET with RESTNET 34
    sm.set_framework('tf.keras')
@@ -189,12 +180,14 @@ if __name__ =='__main__':
    opt = hvd.DistributedOptimizer(opt)
    model.compile(optimizer=opt, loss=bce_logdice_loss, metrics=[dice_coef, 'binary_accuracy', true_positive_rate], experimental_run_tf_function=False)
 
-   steps = (train_masks.shape[0] // args.batch_size) // hvd.size()
-   step_count = min(MAX_TRAIN_STEPS, steps)
+   train_steps = (train_masks.shape[0] // args.batch_size) // hvd.size()
+   valid_steps = (valid_masks.shape[0] // args.batch_size) // hvd.size()
+   step_count = min(MAX_TRAIN_STEPS, train_steps)
    loss_history = [model.fit(train_gen,
                            # batch_size=args.batch_size,
                           epochs=args.epochs,
                           steps_per_epoch=step_count,
-                          validation_data=(valid_x, valid_y),
+                          validation_data=valid_gen,
+                          validation_steps=valid_steps,
                           callbacks=callbacks_list,
                           verbose=1 if hvd.rank() == 0 else 0)]
